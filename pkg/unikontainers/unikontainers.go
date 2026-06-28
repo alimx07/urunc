@@ -30,6 +30,7 @@ import (
 	"syscall"
 
 	"github.com/urunc-dev/urunc/pkg/network"
+	"github.com/urunc-dev/urunc/pkg/network/localhost"
 	"github.com/urunc-dev/urunc/pkg/unikontainers/hypervisors"
 	"github.com/urunc-dev/urunc/pkg/unikontainers/types"
 	"github.com/urunc-dev/urunc/pkg/unikontainers/unikernels"
@@ -259,7 +260,13 @@ func (u *Unikontainer) SetupNet() (types.NetDevParams, error) {
 	networkType := u.getNetworkType()
 	uniklog.WithField("network type", networkType).Debug("Retrieved network type")
 	netArgs := types.NetDevParams{}
-	netManager, err := network.NewNetworkManager(networkType)
+
+	fwd, err := localhost.Detect(resolvConfSource(u.Spec.Mounts), u.UruncCfg.Network.DNSResolverIP)
+	if err != nil {
+		uniklog.Warnf("failed to detect loopback resolver: %v", err)
+	}
+
+	netManager, err := network.NewNetworkManager(networkType, fwd)
 	if err != nil {
 		return netArgs, fmt.Errorf("failed to create network manager for %s type: %v", networkType, err)
 	}
@@ -282,8 +289,9 @@ func (u *Unikontainer) SetupNet() (types.NetDevParams, error) {
 		// virtual ethernet interface inside the namespace
 		netArgs.MAC = networkInfo.EthDevice.MAC
 		netArgs.MTU = networkInfo.EthDevice.MTU
+		// Empty unless dynamic networking applied localhost DNS forwarding.
+		netArgs.DNSServer = networkInfo.DNSServer
 	}
-
 	return netArgs, nil
 }
 
@@ -831,6 +839,9 @@ func (u *Unikontainer) Kill() error {
 		return err
 	}
 
+	if err := localhost.Cleanup(); err != nil {
+		uniklog.Errorf("failed to cleanup localhost forwarding rules: %v", err)
+	}
 	err = network.CleanupAllUruncTaps()
 	if err != nil {
 		uniklog.Errorf("failed to cleanup tap devices: %v", err)
